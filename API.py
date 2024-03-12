@@ -71,6 +71,8 @@ class Attempt:
         hvo_seq_total.hvo = hvo_seq_total.hvo + bongo_mapping.hvo
         return hvo_seq_total
 
+    def is_valid(self):
+        return os.path.exists(self.drum_path) and os.path.exists(self.get_bongo_loop_midi_path())
 
     def load_source_drum_note_seq(self):
         return note_seq.midi_file_to_note_sequence(self.drum_path)
@@ -96,13 +98,86 @@ class UserAttempts:
 
         # check how many attempt_** folders are in the attempts_dir
         self.attempts = []
-        for attempt in os.listdir(attempts_dir):
-            if attempt.startswith('attempt_'):
-                self.attempts.append(Attempt(os.path.join(attempts_dir, attempt), self.user_level_of_musical_experience, self.user_exhibion_rating))
+        self.__load_all_attempts(attempts_dir)
 
         self.attempts = sorted(self.attempts, key=lambda x: x.attempt_duration)
         self.number_of_attempts = len(self.attempts)
         self.user_id = int(attempts_dir.split('SavedSessions/session_')[-1][:8])
+        self.attempts_dir = attempts_dir
+
+    def __load_all_attempts(self, attempts_dir_):
+        for attempt in os.listdir(attempts_dir_):
+            if attempt.startswith('attempt_'):
+                temp_attempt = Attempt(os.path.join(attempts_dir_, attempt), self.user_level_of_musical_experience, self.user_exhibion_rating)
+                if temp_attempt.is_valid():
+                    self.attempts.append(Attempt(os.path.join(attempts_dir_, attempt), self.user_level_of_musical_experience, self.user_exhibion_rating))
+
+    @classmethod
+    def from_selected_attempts(cls, attempts_dir, selected_attempts):
+        instance = cls(attempts_dir)
+        instance.attempts = selected_attempts
+        instance.number_of_attempts = len(instance.attempts)
+        if instance.number_of_attempts > 0:
+            return instance
+        else:
+            return None
+
+    def get_attempts_with_total_bongo_hits_within_range(self, min_bongo_hits, max_bongo_hits):
+        selected_attempts = []
+        for attempt in self.attempts:
+            bongo_loop_hits = attempt.load_bongo_loop_hvo_seq().hvo[:,:2].sum()
+            if min_bongo_hits <= bongo_loop_hits <= max_bongo_hits:
+                selected_attempts.append(attempt)
+        return UserAttempts.from_selected_attempts(self.attempts_dir, selected_attempts)
+
+    def get_attempts_in_tempo_range(self, min_tempo, max_tempo):
+        selected_attempts = []
+        for attempt in self.attempts:
+            if min_tempo <= attempt.attempt_tempo <= max_tempo:
+                selected_attempts.append(attempt)
+        return UserAttempts.from_selected_attempts(self.attempts_dir, selected_attempts)
+
+    def get_attempts_with_with_style(self, style):
+        selected_attempts = []
+        for attempt in self.attempts:
+            if attempt.genre == style:
+                selected_attempts.append(attempt)
+        return UserAttempts.from_selected_attempts(self.attempts_dir, selected_attempts)
+
+    def get_attempts_with_self_assessment_within_range(self, min , max):
+        selected_attempts = []
+        for attempt in self.attempts:
+            if min <= attempt.self_assessment <= max:
+                selected_attempts.append(attempt)
+        return UserAttempts.from_selected_attempts(self.attempts_dir, selected_attempts)
+
+    def get_attempts_with_attempt_duration_minimum(self, min_duration):
+        selected_attempts = []
+        for attempt in self.attempts:
+            if attempt.attempt_duration >= min_duration:
+                selected_attempts.append(attempt)
+        return UserAttempts.from_selected_attempts(self.attempts_dir, selected_attempts)
+
+    def get_attempts_with_assessment_duration_minimum(self, min_duration):
+        selected_attempts = []
+        for attempt in self.attempts:
+            if attempt.assessment_time >= min_duration:
+                selected_attempts.append(attempt)
+        return UserAttempts.from_selected_attempts(self.attempts_dir, selected_attempts)
+
+    def filter_by_user_level_of_musical_experience(self, min_experience, max_experience):
+        selected_attempts = []
+        for attempt in self.attempts:
+            if min_experience <= self.user_level_of_musical_experience <= max_experience:
+                selected_attempts.append(attempt)
+        return UserAttempts.from_selected_attempts(self.attempts_dir, selected_attempts)
+
+    def filter_by_user_exhibion_rating(self, min_rating, max_rating):
+        selected_attempts = []
+        for attempt in self.attempts:
+            if min_rating <= self.user_exhibion_rating <= max_rating:
+                selected_attempts.append(attempt)
+        return UserAttempts.from_selected_attempts(self.attempts_dir, selected_attempts)
 
     def __repr__(self):
         text = '----------------------------------------\n'
@@ -116,73 +191,143 @@ class UserAttempts:
         text += '----------------------------------------\n'
         return text
 
+    def __len__(self):
+        return len(self.attempts)
+
+    def __getitem__(self, item):
+        return self.attempts[item]
+
+    def filter_by_genre(self, genre):
+        return [a for a in self.attempts if a.genre == genre]
+
 
 class ElBongoseroCollection:
-    def __init__(self, dataset_dir):
-        self.dataset_dir = dataset_dir
+    def __init__(self, dataset_dir=None):
         self.number_of_users = 0
         self.users = []
-        self._initialize()
-
-    def _initialize(self):
-        folders_ = [f for f in os.listdir(self.dataset_dir) if os.path.isdir(os.path.join(self.dataset_dir, f)) and f.startswith('session_')]
+        if dataset_dir is not None:
+            self._initialize(dataset_dir)
+        
+    def _initialize(self, dataset_dir):
+        folders_ = [f for f in os.listdir(dataset_dir) if os.path.isdir(os.path.join(dataset_dir, f)) and f.startswith('session_')]
 
         valid_folders = []
 
         for folder in folders_:
             try:
-                if os.path.exists(os.path.join(self.dataset_dir, folder, 'session_meta.json')):
-                    session_metadata = os.path.join(self.dataset_dir, folder, 'session_meta.json')
+                if os.path.exists(os.path.join(dataset_dir, folder, 'session_meta.json')):
+                    session_metadata = os.path.join(dataset_dir, folder, 'session_meta.json')
                     with open(session_metadata, 'r') as f:
                         session_metadata = json.load(f)
 
                     if session_metadata['explicitely_granted_consent'].lower() == 'yes':
-                        attempts_dir = os.path.join(self.dataset_dir, folder, 'Part2_BongosAlonWithDrums')
-                        if os.path.exists(attempts_dir):
+                        attempts_dir = os.path.join(dataset_dir, folder, 'Part2_BongosAlonWithDrums')
+                        if os.path.exists(attempts_dir) and len(os.listdir(attempts_dir)) > 0:
                             valid_folders.append(folder)
             except:
                 pass
 
         self.number_of_users = len(valid_folders)
-        self.users = [UserAttempts(os.path.join(self.dataset_dir, folder, 'Part2_BongosAlonWithDrums')) for folder in valid_folders]
+        self.users = [UserAttempts(os.path.join(dataset_dir, folder, 'Part2_BongosAlonWithDrums')) for folder in valid_folders]
 
     @classmethod
-    def from_attempts_list(cls, dataset_dir, attempts_list):
-        """
-        Alternative constructor to create an instance with a subset of attempts.
-
-        Args:
-        - dataset_dir (str): The directory of the dataset.
-        - attempts_list (list): A list of folder names representing the attempts to include.
-        """
-        instance = cls.__new__(cls)
-        instance.dataset_dir = dataset_dir
-        instance.number_of_users = 0
-        instance.users = []
-
-        valid_folders = [folder for folder in attempts_list if os.path.isdir(os.path.join(dataset_dir, folder)) and folder.startswith('session_')]
-
-        for folder in valid_folders:
-            try:
-                if os.path.exists(os.path.join(dataset_dir, folder, 'session_meta.json')):
-                    with open(os.path.join(dataset_dir, folder, 'session_meta.json'), 'r') as f:
-                        session_metadata = json.load(f)
-
-                    if session_metadata.get('explicitely_granted_consent', '').lower() == 'yes':
-                        attempts_dir = os.path.join(dataset_dir, folder, 'Part2_BongosAlonWithDrums')
-                        if os.path.exists(attempts_dir):
-                            instance.users.append(UserAttempts(attempts_dir))
-            except:
-                pass
-
-        instance.number_of_users = len(instance.users)
+    def from_attempts_list(cls, select_users):
+        instance = cls()
+        instance.users = select_users
+        instance.number_of_users = len(select_users)
         return instance
+
+    '''
+     attempts.get_attempts_with_self_assessment_within_range(0, 3)
+    attempts.get_attempts_with_attempt_duration_minimum(22)
+    attempts.get_attempts_with_assessment_duration_minimum(24)
+    attempts.get_attempts_in_tempo_range(100, 115)
+    attempts.get_attempts_with_total_bongo_hits_within_range(0, 13)
+    attempts.get_attempts_with_with_style('Punk')'''
+    def filter_by_self_assessment_within_range(self, min_attempts, max_attempts):
+        selected_users = []
+        for user_attempts in self.users:
+            filtered_attempts = user_attempts.get_attempts_with_self_assessment_within_range(min_attempts, max_attempts)
+            if filtered_attempts is not None:
+                if len(filtered_attempts) > 0:
+                    selected_users.append(filtered_attempts)
+        return ElBongoseroCollection.from_attempts_list(selected_users)
+
+    def filter_by_attempt_duration_minimum(self, min_duration):
+        selected_users = []
+        for user_attempts in self.users:
+            filtered_attempts = user_attempts.get_attempts_with_attempt_duration_minimum(min_duration)
+            if filtered_attempts is not None:
+                if len(filtered_attempts) > 0:
+                    selected_users.append(filtered_attempts)
+        return ElBongoseroCollection.from_attempts_list(selected_users)
+
+    def filter_by_assessment_duration_minimumm(self, min_duration):
+        selected_users = []
+        for user_attempts in self.users:
+            filtered_attempts = user_attempts.get_attempts_with_attempt_duration_minimum(min_duration)
+            if filtered_attempts is not None:
+                if len(filtered_attempts) > 0:
+                    selected_users.append(filtered_attempts)
+        return ElBongoseroCollection.from_attempts_list(selected_users)
+
+    def filter_by_tempo_range(self, min_tempo, max_tempo):
+        selected_users = []
+        for user_attempts in self.users:
+            filtered_attempts = user_attempts.get_attempts_in_tempo_range(min_tempo, max_tempo)
+            if filtered_attempts is not None:
+                if len(filtered_attempts) > 0:
+                    selected_users.append(filtered_attempts)
+        return ElBongoseroCollection.from_attempts_list(selected_users)
+
+    def filter_by_total_bongo_hits_within_range(self, min_bongo_hits, max_bongo_hits):
+        selected_users = []
+        for user_attempts in self.users:
+            filtered_attempts = user_attempts.get_attempts_with_total_bongo_hits_within_range(min_bongo_hits, max_bongo_hits)
+            if filtered_attempts is not None:
+                if len(filtered_attempts) > 0:
+                    selected_users.append(filtered_attempts)
+        return ElBongoseroCollection.from_attempts_list(selected_users)
+
+    def filter_by_style(self, style):
+        selected_users = []
+        for user_attempts in self.users:
+            filtered_attempts = user_attempts.get_attempts_with_with_style(style)
+            if filtered_attempts is not None:
+                if len(filtered_attempts) > 0:
+                    selected_users.append(filtered_attempts)
+        return ElBongoseroCollection.from_attempts_list(selected_users)
+
+    def filter_by_user_level_of_musical_experience(self, min_experience, max_experience):
+        selected_users = []
+        for user_attempts in self.users:
+            filtered_attempts = user_attempts.filter_by_user_level_of_musical_experience(min_experience, max_experience)
+            if filtered_attempts is not None:
+                if len(filtered_attempts) > 0:
+                    selected_users.append(filtered_attempts)
+        return ElBongoseroCollection.from_attempts_list(selected_users)
+
+    def filter_by_user_exhibion_rating(self, min_rating, max_rating):
+        selected_users = []
+        for user_attempts in self.users:
+            filtered_attempts = user_attempts.filter_by_user_exhibion_rating(min_rating, max_rating)
+            if filtered_attempts is not None:
+                if len(filtered_attempts) > 0:
+                    selected_users.append(filtered_attempts)
+        return ElBongoseroCollection.from_attempts_list(selected_users)
 
     def get_all_attempts(self):
         attempts = []
         for user in self.users:
             attempts.extend(user.attempts)
         return attempts
+
+    def get_bongo_hits_statistics(self):
+        hit_counts = []
+        for user in self.users:
+            for attempt in user.attempts:
+                hit_counts.append(attempt.load_bongo_loop_hvo_seq().hvo[:,:2].sum())
+        return {'mean': np.mean(hit_counts), 'std': np.std(hit_counts), 'min': np.min(hit_counts), 'max': np.max(hit_counts)}
 
     def get_all_styles(self):
         styles = []
@@ -195,6 +340,28 @@ class ElBongoseroCollection:
         for user in self.users:
             attempts.extend([a for a in user.attempts if a.genre == style])
         return attempts
+
+    def get_self_assessment_rating_statistics(self):
+        ratings = []
+        for user in self.users:
+            for attempt in user.attempts:
+                ratings.append(attempt.self_assessment)
+        return {'mean': np.mean(ratings), 'std': np.std(ratings), 'min': np.min(ratings), 'max': np.max(ratings)}
+
+    def get_exhibition_rating_statistics(self):
+        ratings = []
+        for user in self.users:
+            ratings.append(user.user_exhibion_rating)
+        return {'mean': np.mean(ratings), 'std': np.std(ratings), 'min': np.min(ratings), 'max': np.max(ratings)}
+
+    def get_bongo_groove_density_to_drum_density_ratio_statistics(self):
+        ratios = []
+        for user in self.users:
+            for attempt in user.attempts:
+                bongo_loop = attempt.load_bongo_loop_hvo_seq().flatten_voices(reduce_dim=True)[:, 0]
+                drums = attempt.load_source_drum_hvo_seq().flatten_voices(reduce_dim=True)[:, 0]
+                ratios.append(bongo_loop.sum() / drums.sum())
+        return {'mean': np.mean(ratios), 'std': np.std(ratios), 'min': np.min(ratios), 'max': np.max(ratios)}
 
     def count_number_of_attempts_per_style(self):
         styles = []
@@ -219,22 +386,39 @@ class ElBongoseroCollection:
 
         return files_per_style
 
-    def filter_subCollection_by_genre(self, style):
-        return ElBongoseroCollection.from_attempts_list(self.dataset_dir, [f'{user.user_id:08d}' for user in self.users for a in user.attempts if a.genre == style])
-
     def __len__(self):
         return len(self.users)
 
     def __getitem__(self, item):
         return self.users[item]
 
+    def __repr__(self):
+        return f"ElBongoseroCollection with {self.number_of_users} users, total of {len(self.get_all_attempts())} attempts"
+
 
 if __name__ == "__main__":
 
     attempts = UserAttempts('SavedSessionToMar12_2024_Noon/SavedSessions/session_00000089/Part2_BongosAlonWithDrums')
 
-    collection = ElBongoseroCollection('SavedSessionToMar12_2024_Noon/SavedSessions/')
-    collection.get_all_styles()
-    collection[0].attempts[0].load_bongo_loop_hvo_seq()
-    collection[0].attempts[0].load_source_drum_hvo_seq()
-    collection[0].attempts[0].load_drums_with_bongos_hvo_sequence()
+    # attempts.get_attempts_with_self_assessment_within_range(0, 3)
+    # attempts.get_attempts_with_attempt_duration_minimum(22)
+    # attempts.get_attempts_with_assessment_duration_minimum(24)
+    # attempts.get_attempts_in_tempo_range(100, 115)
+    # attempts.get_attempts_with_total_bongo_hits_within_range(0, 13)
+    # attempts.get_attempts_with_with_style('Punk')
+
+
+
+    collection = ElBongoseroCollection('SavedSessions/SavedSessions/')
+    collection.filter_by_assessment_duration_minimumm(24)
+    collection.filter_by_attempt_duration_minimum(22)
+    collection.filter_by_self_assessment_within_range(2, 2)
+    collection.filter_by_tempo_range(100, 115)
+    collection.filter_by_total_bongo_hits_within_range(0, 13)
+    collection.filter_by_style('Punk')
+    len(collection.get_all_attempts())
+
+    # collection.get_all_styles()
+    # collection[0].attempts[0].load_bongo_loop_hvo_seq()
+    # collection[0].attempts[0].load_source_drum_hvo_seq()
+    # collection[0].attempts[0].load_drums_with_bongos_hvo_sequence()
