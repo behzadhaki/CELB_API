@@ -8,6 +8,7 @@ import numpy as np
 import tqdm
 from copy import deepcopy
 import random
+from collections import Counter
 import json
 import time
 from hvo_sequence.io_helpers import midi_to_hvo_sequence
@@ -115,55 +116,125 @@ class UserAttempts:
         text += '----------------------------------------\n'
         return text
 
+
 class ElBongoseroCollection:
     def __init__(self, dataset_dir):
+        self.dataset_dir = dataset_dir
+        self.number_of_users = 0
+        self.users = []
+        self._initialize()
 
-        folders_ = [f for f in os.listdir(dataset_dir) if os.path.isdir(os.path.join(dataset_dir, f)) and f.startswith('session_')]
+    def _initialize(self):
+        folders_ = [f for f in os.listdir(self.dataset_dir) if os.path.isdir(os.path.join(self.dataset_dir, f)) and f.startswith('session_')]
 
         valid_folders = []
 
         for folder in folders_:
             try:
-                # open session_meta.json
-                if os.path.exists(os.path.join(dataset_dir, folder, 'session_meta.json')):
-                    session_metadata = os.path.join(dataset_dir, folder, 'session_meta.json')
+                if os.path.exists(os.path.join(self.dataset_dir, folder, 'session_meta.json')):
+                    session_metadata = os.path.join(self.dataset_dir, folder, 'session_meta.json')
                     with open(session_metadata, 'r') as f:
                         session_metadata = json.load(f)
 
                     if session_metadata['explicitely_granted_consent'].lower() == 'yes':
-                        # check if there is at least one attempt
-                        attempts_dir = os.path.join(dataset_dir, folder, 'Part2_BongosAlonWithDrums')
+                        attempts_dir = os.path.join(self.dataset_dir, folder, 'Part2_BongosAlonWithDrums')
                         if os.path.exists(attempts_dir):
                             valid_folders.append(folder)
             except:
                 pass
 
         self.number_of_users = len(valid_folders)
+        self.users = [UserAttempts(os.path.join(self.dataset_dir, folder, 'Part2_BongosAlonWithDrums')) for folder in valid_folders]
 
-        self.user_attempts = []
+    @classmethod
+    def from_attempts_list(cls, dataset_dir, attempts_list):
+        """
+        Alternative constructor to create an instance with a subset of attempts.
+
+        Args:
+        - dataset_dir (str): The directory of the dataset.
+        - attempts_list (list): A list of folder names representing the attempts to include.
+        """
+        instance = cls.__new__(cls)
+        instance.dataset_dir = dataset_dir
+        instance.number_of_users = 0
+        instance.users = []
+
+        valid_folders = [folder for folder in attempts_list if os.path.isdir(os.path.join(dataset_dir, folder)) and folder.startswith('session_')]
 
         for folder in valid_folders:
-            self.user_attempts.append(UserAttempts(os.path.join(dataset_dir, folder, 'Part2_BongosAlonWithDrums')))
+            try:
+                if os.path.exists(os.path.join(dataset_dir, folder, 'session_meta.json')):
+                    with open(os.path.join(dataset_dir, folder, 'session_meta.json'), 'r') as f:
+                        session_metadata = json.load(f)
+
+                    if session_metadata.get('explicitely_granted_consent', '').lower() == 'yes':
+                        attempts_dir = os.path.join(dataset_dir, folder, 'Part2_BongosAlonWithDrums')
+                        if os.path.exists(attempts_dir):
+                            instance.users.append(UserAttempts(attempts_dir))
+            except:
+                pass
+
+        instance.number_of_users = len(instance.users)
+        return instance
 
     def get_all_attempts(self):
         attempts = []
-        for user in self.user_attempts:
+        for user in self.users:
             attempts.extend(user.attempts)
         return attempts
 
+    def get_all_styles(self):
+        styles = []
+        for user in self.users:
+            styles.extend([a.genre for a in user.attempts])
+        return sorted(list(set(styles)))
+
+    def get_all_attempts_with_style(self, style):
+        attempts = []
+        for user in self.users:
+            attempts.extend([a for a in user.attempts if a.genre == style])
+        return attempts
+
+    def count_number_of_attempts_per_style(self):
+        styles = []
+        for user in self.users:
+            styles.extend([a.genre for a in user.attempts])
+
+        res = dict(Counter(styles))
+
+        return {x: res[x] for x in self.get_all_styles()}
+
+    def count_unique_drums_tested_per_style(self):
+        files_per_style = {x: [] for x in self.get_all_styles()}
+        
+        for user in self.users:
+            for attempt in user.attempts:
+                files_per_style[attempt.genre].append(attempt.drum_path)
+
+        for k, v in files_per_style.items():
+            files_per_style[k] = len(set(v))
+
+        # sort alphabetically
+
+        return files_per_style
+
+    def filter_subCollection_by_genre(self, style):
+        return ElBongoseroCollection.from_attempts_list(self.dataset_dir, [f'{user.user_id:08d}' for user in self.users for a in user.attempts if a.genre == style])
+
     def __len__(self):
-        return len(self.user_attempts)
+        return len(self.users)
 
     def __getitem__(self, item):
-        return self.user_attempts[item]
+        return self.users[item]
+
 
 if __name__ == "__main__":
 
     attempts = UserAttempts('SavedSessionToMar12_2024_Noon/SavedSessions/session_00000089/Part2_BongosAlonWithDrums')
-    print(attempts)
 
     collection = ElBongoseroCollection('SavedSessionToMar12_2024_Noon/SavedSessions/')
-
-    collection[0].attempts[0].load_bongo_loop_hvo_seq(bongo_mapping=BONGOSERRO_MAPPING)
-    collection[0].attempts[0].load_source_drum_hvo_seq(drum_mapping=ROLAND_REDUCED_MAPPING_With_Bongos)
-    collection[0].attempts[0].load_drums_with_bongos_hvo_sequence(drum_mapping=ROLAND_REDUCED_MAPPING, bongo_mapping=BONGOSERRO_MAPPING)
+    collection.get_all_styles()
+    collection[0].attempts[0].load_bongo_loop_hvo_seq()
+    collection[0].attempts[0].load_source_drum_hvo_seq()
+    collection[0].attempts[0].load_drums_with_bongos_hvo_sequence()
