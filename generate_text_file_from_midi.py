@@ -1,7 +1,15 @@
 import os
 import note_seq
+import zipfile
+import shutil
+
 
 def duplicate_folder_structure(source_folder, duplicate_folder):
+    """
+    Duplicate the structure of a folder.
+    @param source_folder: folder to duplicate structure from
+    @param duplicate_folder: name of the new folder
+    """
     # Create the duplicate folder if it doesn't exist
     if not os.path.exists(duplicate_folder):
         os.makedirs(duplicate_folder)
@@ -17,7 +25,12 @@ def duplicate_folder_structure(source_folder, duplicate_folder):
         else:
             continue
 
+
 def process_midi_files_in_directory(directory):
+    """
+    Converts MIDI files to text files in a directory and its subdirectories.
+    @param directory: path to the directory holding the MIDI files
+    """
     # Loop through files and folders in the current directory
     for item in os.listdir(directory):
         item_path = os.path.join(directory, item)
@@ -39,21 +52,62 @@ def process_midi_files_in_directory(directory):
                     quarter_notes = (tempo.qpm * note.start_time) / 60
                     file.write('\n' + str(note.pitch) + ', ' + str(note.velocity) + ', ' + str(note.start_time) + ', ' + str(quarter_notes))
 
-def convert_midi_file_path_to_text_file_path(midi_path):
-  # Original file name
-  original_filename = midi_path
 
-  # Replace "DrumMidis" with "DrumMidisText"
-  new_filename = original_filename.replace("DrumMidis", "DrumMidisText").replace(".mid", ".txt")
-  return new_filename
+def convert_midi_file_path_to_text_file_path(midi_path):
+    """"
+    Converts a MIDI file path to the text file path.
+    @param midi_path: string path to the MIDI file
+    @return: string path to the text file
+    """
+    original_filename = midi_path
+    new_filename = original_filename.replace("DrumMidis", "DrumMidisText").replace(".mid", ".txt")
+    return new_filename
+
+
+def zip_folder(folder_path, zip_path):
+    """
+    Zip a folder.
+
+    Args:
+        folder_path (str): Path to the folder to be zipped.
+        zip_path (str): Path to the output zip file.
+    """
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        # Iterate over each file in the folder
+        for root, dirs, files in os.walk(folder_path):
+            for file in files:
+                # Calculate the relative path of the file
+                relative_path = os.path.relpath(os.path.join(root, file), folder_path)
+                # Add the file to the zip file with its relative path
+                zipf.write(os.path.join(root, file), relative_path)
+
+    # Delete the original folder after zipping
+    shutil.rmtree(folder_path)
+
+
+def extract_zip(zip_file, extract_dir):
+    with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+        zip_ref.extractall(extract_dir)
 
 
 def main():
+    if not os.path.exists('DrumMidis'):
+        extract_zip('DrumMidis.zip', 'DrumMidis')
+
+    # Duplicate the folder structure of the MIDI files
     source_folder = "DrumMidis"
     duplicate_folder = "DrumMidisText"
     duplicate_folder_structure(source_folder, duplicate_folder)
 
+    # Process the MIDI files in the directory
     process_midi_files_in_directory('DrumMidis')
+
+    # Zip the folder
+    zip_folder("DrumMidisText", "DrumMidisText.zip")
+
+    # Delete the original unzipped midi folder
+    shutil.rmtree("DrumMidis")
+
 
 if __name__ == "__main__":
     main()
