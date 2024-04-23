@@ -1221,7 +1221,8 @@ class HVO_Sequence(object):
 
         if os.path.dirname(filename) != '':
             os.makedirs(os.path.dirname(filename), exist_ok=True)
-
+        self.velocities = np.clip(self.velocities, 0, 1)
+        self.offsets = np.clip(self.velocities, -0.5, 0.5)
         ns = self.to_note_sequence(midi_track_n=midi_track_n)
         pm = note_seq.note_sequence_to_pretty_midi(ns)
         pm.write(filename)
