@@ -1182,9 +1182,15 @@ class HVO_Sequence(object):
 
             end_time = start_time + note_duration  # ending time of note in sec
 
-            ns.notes.add(pitch=pitch, start_time=start_time.item(), end_time=end_time.item(),
-                         is_drum=True, instrument=midi_track_n, velocity=int(velocity.item() * 127))
-
+            try:
+                vel_scaled = int(velocity.item() * 127)
+                vel_scaled = vel_scaled if vel_scaled <= 127 else 127
+                vel_scaled = vel_scaled if vel_scaled >=0 else 0
+                ns.notes.add(pitch=pitch, start_time=start_time.item(), end_time=end_time.item(),
+                             is_drum=True, instrument=midi_track_n, velocity=vel_scaled)
+            except Exception as e:
+                print(e)
+                continue
         # ns.total_time = self.total_len
 
         for tempo in self.tempos:
