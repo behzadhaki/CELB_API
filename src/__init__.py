@@ -13,13 +13,14 @@ import json
 import time
 from hvo_sequence.io_helpers import midi_to_hvo_sequence
 from hvo_sequence.drum_mappings import ROLAND_REDUCED_MAPPING, ROLAND_REDUCED_MAPPING_With_Bongos, BONGOSERRO_MAPPING
+import zipfile, bz2
+
 def time_string(time_string):
     return time.mktime(time.strptime(time_string, "%Y-%m-%d %H:%M:%S.%f"))
 
 
 class Attempt:
     def __init__(self, attempt_dir, user_level_of_musical_experience, user_exhibion_rating):
-
         # load json
         path_ = os.path.join(attempt_dir, 'groove_metadata.json')
         with open(path_, 'r') as f:
@@ -38,6 +39,8 @@ class Attempt:
         self.attempt_tempo = meta['tempos'][-1][0]
 
         self.drum_path = meta['midi_drum_path'][0][0].split('My Drive/')[-1]
+        self.drum_path = self.drum_path.replace('DrumMidis', 'DrumMidisText')
+        self.drum_path = self.drum_path.replace('DrumMidisText/', '')
 
         self.metadata_json = os.path.join(attempt_dir, 'groove_metadata.json')
 
@@ -52,27 +55,55 @@ class Attempt:
     def __repr__(self):
         return self.__dict__.__repr__()
 
-    def load_source_drum_hvo_seq(self, drum_mapping=ROLAND_REDUCED_MAPPING):
-        hs = midi_to_hvo_sequence(self.drum_path, drum_mapping=drum_mapping, beat_division_factors=[4])
+    def load_source_drum_hvo_seq(self, drum_source, drum_mapping=ROLAND_REDUCED_MAPPING):
+        if drum_source.endswith('.zip'):
+            extract_dir = drum_source.replace('.zip', '')
+            extract_zip(drum_source, extract_dir)
+            drum_source = extract_dir
+        elif drum_source.endswith('.bz2'):
+            extract_dir = drum_source.replace('.bz2', '')
+            extract_bz2(drum_source, extract_dir)
+            drum_source = extract_dir
+
+        # list all the files in the drum_source (all subfolders)
+        path = None
+        for root, dirs, files in os.walk(drum_source):
+            for file in files:
+                if file.endswith('.mid') or file.endswith('.txt'):
+                    if self.drum_path in os.path.join(root, file):
+                        path = os.path.join(root, file)
+                        break
+        if path is None:
+            raise Exception(f'Drum file {self.drum_path} not found in {drum_source}')
+
+        hs = midi_to_hvo_sequence(path, drum_mapping=drum_mapping, beat_division_factors=[4])
         hs.adjust_length(32)
         return hs
 
     def load_bongo_loop_hvo_seq(self, bongo_mapping=BONGOSERRO_MAPPING):
-        hs = midi_to_hvo_sequence(self.get_bongo_loop_midi_path(), drum_mapping=bongo_mapping, beat_division_factors=[4])
+        hs = midi_to_hvo_sequence(self.get_bongo_loop_midi_path(), drum_mapping=bongo_mapping,
+                                  beat_division_factors=[4])
         hs.adjust_length(32)
         return hs
 
-    def load_drums_with_bongos_hvo_sequence(self, drum_mapping=ROLAND_REDUCED_MAPPING, bongo_mapping=BONGOSERRO_MAPPING):
+    def load_drums_with_bongos_hvo_sequence(self,
+                                            drum_source,
+                                            drum_mapping=ROLAND_REDUCED_MAPPING,
+                                            bongo_mapping=BONGOSERRO_MAPPING):
+
         collective_map = bongo_mapping.copy()
         collective_map.update(drum_mapping)
-        hvo_seq_drums = self.load_source_drum_hvo_seq(drum_mapping=collective_map)
+        hvo_seq_drums = self.load_source_drum_hvo_seq(drum_source=drum_source, drum_mapping=collective_map)
         bongo_mapping = self.load_bongo_loop_hvo_seq(bongo_mapping=collective_map)
         hvo_seq_total = hvo_seq_drums.copy()
         hvo_seq_total.hvo = hvo_seq_total.hvo + bongo_mapping.hvo
         return hvo_seq_total
 
-    def is_valid(self):
-        return os.path.exists(self.drum_path) and os.path.exists(self.get_bongo_loop_midi_path())
+    def is_valid(self, ignore_source_drums=True):
+        if ignore_source_drums:
+            return os.path.exists(self.get_bongo_loop_midi_path())
+        else:
+            return os.path.exists(self.drum_path) and os.path.exists(self.get_bongo_loop_midi_path())
 
     def load_source_drum_note_seq(self):
         return note_seq.midi_file_to_note_sequence(self.drum_path)
@@ -92,7 +123,7 @@ class UserAttempts:
             try:
                 self.user_level_of_musical_experience = meta['level_of_musical_experience'][-1]["rating"]
                 self.user_exhibion_rating = meta['exhibition_rating'][-1]["rating"]
-            except:
+            except Exception as e:
                 self.user_level_of_musical_experience = -1
                 self.user_exhibion_rating = -1
 
@@ -108,9 +139,12 @@ class UserAttempts:
     def __load_all_attempts(self, attempts_dir_):
         for attempt in os.listdir(attempts_dir_):
             if attempt.startswith('attempt_'):
-                temp_attempt = Attempt(os.path.join(attempts_dir_, attempt), self.user_level_of_musical_experience, self.user_exhibion_rating)
+                temp_attempt = Attempt(os.path.join(attempts_dir_, attempt), self.user_level_of_musical_experience,
+                                       self.user_exhibion_rating)
                 if temp_attempt.is_valid():
-                    self.attempts.append(Attempt(os.path.join(attempts_dir_, attempt), self.user_level_of_musical_experience, self.user_exhibion_rating))
+                    self.attempts.append(
+                        Attempt(os.path.join(attempts_dir_, attempt), self.user_level_of_musical_experience,
+                                self.user_exhibion_rating))
 
     @classmethod
     def from_selected_attempts(cls, attempts_dir, selected_attempts):
@@ -125,7 +159,7 @@ class UserAttempts:
     def get_attempts_with_total_bongo_hits_within_range(self, min_bongo_hits, max_bongo_hits):
         selected_attempts = []
         for attempt in self.attempts:
-            bongo_loop_hits = attempt.load_bongo_loop_hvo_seq().hvo[:,:2].sum()
+            bongo_loop_hits = attempt.load_bongo_loop_hvo_seq().hvo[:, :2].sum()
             if min_bongo_hits <= bongo_loop_hits <= max_bongo_hits:
                 selected_attempts.append(attempt)
         return UserAttempts.from_selected_attempts(self.attempts_dir, selected_attempts)
@@ -144,7 +178,7 @@ class UserAttempts:
                 selected_attempts.append(attempt)
         return UserAttempts.from_selected_attempts(self.attempts_dir, selected_attempts)
 
-    def get_attempts_with_self_assessment_within_range(self, min , max):
+    def get_attempts_with_self_assessment_within_range(self, min, max):
         selected_attempts = []
         for attempt in self.attempts:
             if min <= attempt.self_assessment <= max:
@@ -186,7 +220,7 @@ class UserAttempts:
         text += 'User Level of Musical Experience: ' + str(self.user_level_of_musical_experience) + '\n'
         text += 'User Exhibition Rating: ' + str(self.user_exhibion_rating) + '\n'
         for i, attempt in enumerate(self.attempts):
-            text += f'Attempt {i+1}:\n'
+            text += f'Attempt {i + 1}:\n'
             text += attempt.__repr__() + '\n'
         text += '----------------------------------------\n'
         return text
@@ -201,34 +235,115 @@ class UserAttempts:
         return [a for a in self.attempts if a.genre == genre]
 
 
-class ElBongoseroCollection:
-    def __init__(self, dataset_dir=None):
+def extract_zip(zip_file, extract_dir):
+    with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+        zip_ref.extractall(extract_dir)
+
+
+def extract_bz2(bz2_file, extract_dir):
+    """
+    Extract a BZ2 compressed file.
+
+    :param bz2_file: Path to the BZ2 compressed file.
+    :param extract_dir: Directory where the decompressed contents will be saved.
+    """
+    # Ensure the extraction directory exists
+    os.makedirs(extract_dir, exist_ok=True)
+
+    # Open the BZ2 file for reading
+    with bz2.open(bz2_file, 'rb') as file_in:
+        # Decompress the data
+        data = file_in.read()
+
+        # Write the decompressed data to the output file
+        with open("temp.zip", 'wb') as file_out:
+            file_out.write(data)
+
+        extract_zip("temp.zip", extract_dir)
+
+        os.remove("temp.zip")
+
+
+class BongoDrumCollection:
+    def __init__(self, dataset_path=None):
         self.number_of_users = 0
         self.users = []
-        if dataset_dir is not None:
-            self._initialize(dataset_dir)
-        
-    def _initialize(self, dataset_dir):
-        folders_ = [f for f in os.listdir(dataset_dir) if os.path.isdir(os.path.join(dataset_dir, f)) and f.startswith('session_')]
+        if dataset_path is not None:
+            self._initialize(dataset_path)
+
+    def _initialize(self, dataset_path):
+
+        # check if the dataset is zipped and extract it
+        used_zipped = False
+        if dataset_path.endswith('.bz2'):
+            used_zipped = True
+            fname = dataset_path.split('/')[-1].replace('.bz2', '')
+            extract_dir = dataset_path.replace('.bz2', '')
+            extract_bz2(dataset_path, extract_dir)
+            dataset_path = os.path.join(extract_dir, fname)
+
+        if dataset_path.endswith('.zip'):
+            used_zipped = True
+            fname = dataset_path.split('/')[-1].replace('.bz2', '')
+            extract_dir = dataset_path.replace('.zip', '')
+            extract_zip(dataset_path, extract_dir)
+            dataset_path = os.path.join(extract_dir, fname)
+
+        folders_ = [f for f in os.listdir(dataset_path) if
+                    os.path.isdir(os.path.join(dataset_path, f)) and f.startswith('session_')]
 
         valid_folders = []
 
         for folder in folders_:
             try:
-                if os.path.exists(os.path.join(dataset_dir, folder, 'session_meta.json')):
-                    session_metadata = os.path.join(dataset_dir, folder, 'session_meta.json')
+                if os.path.exists(os.path.join(dataset_path, folder, 'session_meta.json')):
+                    session_metadata = os.path.join(dataset_path, folder, 'session_meta.json')
                     with open(session_metadata, 'r') as f:
                         session_metadata = json.load(f)
 
                     if session_metadata['explicitely_granted_consent'].lower() == 'yes':
-                        attempts_dir = os.path.join(dataset_dir, folder, 'Part2_BongosAlonWithDrums')
+                        attempts_dir = os.path.join(dataset_path, folder, 'Part2_BongosAlonWithDrums')
                         if os.path.exists(attempts_dir) and len(os.listdir(attempts_dir)) > 0:
                             valid_folders.append(folder)
             except:
                 pass
 
         self.number_of_users = len(valid_folders)
-        self.users = [UserAttempts(os.path.join(dataset_dir, folder, 'Part2_BongosAlonWithDrums')) for folder in valid_folders]
+        self.users = []
+        for folder in valid_folders:
+            path_ = os.path.join(dataset_path, folder, 'Part2_BongosAlonWithDrums')
+            self.users.append(UserAttempts(path_))
+
+        # remove the extracted folder if zipped collection was used
+        # if used_zipped:
+        #     shutil.rmtree(dataset_path, ignore_errors=True)
+
+    def export(self, dir, should_zip=False):
+        import json
+        import shutil
+
+        if not os.path.exists(dir):
+            os.makedirs(dir)
+
+        for user in self.users:
+            user_dir = os.path.join(dir, f"user_{user.user_id}")
+            if not os.path.exists(user_dir):
+                os.makedirs(user_dir)
+
+            for attempt in user:
+                attempt_dir = os.path.join(user_dir, f"attempt_{attempt.attempt_id}")
+                if not os.path.exists(attempt_dir):
+                    os.makedirs(attempt_dir)
+
+                shutil.copy(attempt.drum_path, os.path.join(attempt_dir, "drums.mid"))
+                shutil.copy(attempt.get_bongo_loop_midi_path(), os.path.join(attempt_dir, "bongos.mid"))
+
+                with open(os.path.join(attempt_dir, "metadata.json"), "w") as f:
+                    json.dump(attempt.__dict__, f)
+
+        if should_zip:
+            shutil.make_archive(dir, 'zip', dir)
+            shutil.rmtree(dir)
 
     @classmethod
     def from_attempts_list(cls, select_users):
@@ -244,6 +359,7 @@ class ElBongoseroCollection:
     attempts.get_attempts_in_tempo_range(100, 115)
     attempts.get_attempts_with_total_bongo_hits_within_range(0, 13)
     attempts.get_attempts_with_with_style('Punk')'''
+
     def filter_by_self_assessment_within_range(self, min_attempts, max_attempts):
         selected_users = []
         for user_attempts in self.users:
@@ -251,7 +367,7 @@ class ElBongoseroCollection:
             if filtered_attempts is not None:
                 if len(filtered_attempts) > 0:
                     selected_users.append(filtered_attempts)
-        return ElBongoseroCollection.from_attempts_list(selected_users)
+        return BongoDrumCollection.from_attempts_list(selected_users)
 
     def filter_by_attempt_duration_minimum(self, min_duration):
         selected_users = []
@@ -260,7 +376,7 @@ class ElBongoseroCollection:
             if filtered_attempts is not None:
                 if len(filtered_attempts) > 0:
                     selected_users.append(filtered_attempts)
-        return ElBongoseroCollection.from_attempts_list(selected_users)
+        return BongoDrumCollection.from_attempts_list(selected_users)
 
     def filter_by_assessment_duration_minimumm(self, min_duration):
         selected_users = []
@@ -269,7 +385,7 @@ class ElBongoseroCollection:
             if filtered_attempts is not None:
                 if len(filtered_attempts) > 0:
                     selected_users.append(filtered_attempts)
-        return ElBongoseroCollection.from_attempts_list(selected_users)
+        return BongoDrumCollection.from_attempts_list(selected_users)
 
     def filter_by_tempo_range(self, min_tempo, max_tempo):
         selected_users = []
@@ -278,16 +394,17 @@ class ElBongoseroCollection:
             if filtered_attempts is not None:
                 if len(filtered_attempts) > 0:
                     selected_users.append(filtered_attempts)
-        return ElBongoseroCollection.from_attempts_list(selected_users)
+        return BongoDrumCollection.from_attempts_list(selected_users)
 
     def filter_by_total_bongo_hits_within_range(self, min_bongo_hits, max_bongo_hits):
         selected_users = []
         for user_attempts in self.users:
-            filtered_attempts = user_attempts.get_attempts_with_total_bongo_hits_within_range(min_bongo_hits, max_bongo_hits)
+            filtered_attempts = user_attempts.get_attempts_with_total_bongo_hits_within_range(min_bongo_hits,
+                                                                                              max_bongo_hits)
             if filtered_attempts is not None:
                 if len(filtered_attempts) > 0:
                     selected_users.append(filtered_attempts)
-        return ElBongoseroCollection.from_attempts_list(selected_users)
+        return BongoDrumCollection.from_attempts_list(selected_users)
 
     def filter_by_style(self, style):
         selected_users = []
@@ -296,7 +413,7 @@ class ElBongoseroCollection:
             if filtered_attempts is not None:
                 if len(filtered_attempts) > 0:
                     selected_users.append(filtered_attempts)
-        return ElBongoseroCollection.from_attempts_list(selected_users)
+        return BongoDrumCollection.from_attempts_list(selected_users)
 
     def filter_by_user_level_of_musical_experience(self, min_experience, max_experience):
         selected_users = []
@@ -305,7 +422,7 @@ class ElBongoseroCollection:
             if filtered_attempts is not None:
                 if len(filtered_attempts) > 0:
                     selected_users.append(filtered_attempts)
-        return ElBongoseroCollection.from_attempts_list(selected_users)
+        return BongoDrumCollection.from_attempts_list(selected_users)
 
     def filter_by_user_exhibion_rating(self, min_rating, max_rating):
         selected_users = []
@@ -314,7 +431,7 @@ class ElBongoseroCollection:
             if filtered_attempts is not None:
                 if len(filtered_attempts) > 0:
                     selected_users.append(filtered_attempts)
-        return ElBongoseroCollection.from_attempts_list(selected_users)
+        return BongoDrumCollection.from_attempts_list(selected_users)
 
     def get_all_attempts(self):
         attempts = []
@@ -326,8 +443,9 @@ class ElBongoseroCollection:
         hit_counts = []
         for user in self.users:
             for attempt in user.attempts:
-                hit_counts.append(attempt.load_bongo_loop_hvo_seq().hvo[:,:2].sum())
-        return {'mean': np.mean(hit_counts), 'std': np.std(hit_counts), 'min': np.min(hit_counts), 'max': np.max(hit_counts)}
+                hit_counts.append(attempt.load_bongo_loop_hvo_seq().hvo[:, :2].sum())
+        return {'mean': np.mean(hit_counts), 'std': np.std(hit_counts), 'min': np.min(hit_counts),
+                'max': np.max(hit_counts)}
 
     def get_all_styles(self):
         styles = []
@@ -354,12 +472,12 @@ class ElBongoseroCollection:
             ratings.append(user.user_exhibion_rating)
         return {'mean': np.mean(ratings), 'std': np.std(ratings), 'min': np.min(ratings), 'max': np.max(ratings)}
 
-    def get_bongo_groove_density_to_drum_density_ratio_statistics(self):
+    def get_bongo_groove_density_to_drum_density_ratio_statistics(self, drum_source):
         ratios = []
         for user in self.users:
             for attempt in user.attempts:
                 bongo_loop = attempt.load_bongo_loop_hvo_seq().flatten_voices(reduce_dim=True)[:, 0]
-                drums = attempt.load_source_drum_hvo_seq().flatten_voices(reduce_dim=True)[:, 0]
+                drums = attempt.load_source_drum_hvo_seq(drum_source=drum_source).flatten_voices(reduce_dim=True)[:, 0]
                 ratios.append(bongo_loop.sum() / drums.sum())
         return {'mean': np.mean(ratios), 'std': np.std(ratios), 'min': np.min(ratios), 'max': np.max(ratios)}
 
@@ -374,7 +492,7 @@ class ElBongoseroCollection:
 
     def count_unique_drums_tested_per_style(self):
         files_per_style = {x: [] for x in self.get_all_styles()}
-        
+
         for user in self.users:
             for attempt in user.attempts:
                 files_per_style[attempt.genre].append(attempt.drum_path)
@@ -393,11 +511,10 @@ class ElBongoseroCollection:
         return self.users[item]
 
     def __repr__(self):
-        return f"ElBongoseroCollection with {self.number_of_users} users, total of {len(self.get_all_attempts())} attempts"
+        return f"BongoDrumCollection with {self.number_of_users} users, total of {len(self.get_all_attempts())} attempts"
 
 
 if __name__ == "__main__":
-
     attempts = UserAttempts('SavedSessionToMar12_2024_Noon/SavedSessions/session_00000089/Part2_BongosAlonWithDrums')
 
     # attempts.get_attempts_with_self_assessment_within_range(0, 3)
@@ -407,9 +524,7 @@ if __name__ == "__main__":
     # attempts.get_attempts_with_total_bongo_hits_within_range(0, 13)
     # attempts.get_attempts_with_with_style('Punk')
 
-
-
-    collection = ElBongoseroCollection('SavedSessions/SavedSessions/')
+    collection = BongoDrumCollection('SavedSessions/SavedSessions/')
     collection.filter_by_assessment_duration_minimumm(24)
     collection.filter_by_attempt_duration_minimum(22)
     collection.filter_by_self_assessment_within_range(2, 2)

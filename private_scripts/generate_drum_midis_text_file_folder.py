@@ -92,7 +92,7 @@ def extract_zip(zip_file, extract_dir):
 
 def main():
     if not os.path.exists('DrumMidis'):
-        extract_zip('DrumMidis.zip', 'DrumMidis')
+        extract_zip('../data/DrumMidis.zip', 'DrumMidis')
 
     # Duplicate the folder structure of the MIDI files
     source_folder = "DrumMidis"
@@ -103,7 +103,7 @@ def main():
     process_midi_files_in_directory('DrumMidis')
 
     # Zip the folder
-    zip_folder("DrumMidisText", "DrumMidisText.zip")
+    zip_folder("DrumMidisText", "../data/DrumMidisText.zip")
 
     # Delete the original unzipped midi folder
     shutil.rmtree("DrumMidis")
