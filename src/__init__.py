@@ -46,7 +46,7 @@ class Attempt:
 
         self.metadata_json = os.path.join(attempt_dir, 'groove_metadata.json')
 
-        self.genre = self.drum_path.split('/')[1]
+        self.genre = self.drum_path.split('/')[-2]
 
         self.user_level_of_musical_experience = user_level_of_musical_experience
         self.user_exhibion_rating = user_exhibion_rating
