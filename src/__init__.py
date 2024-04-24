@@ -11,7 +11,9 @@ import random
 from collections import Counter
 import json
 import time
-from hvo_sequence.io_helpers import midi_to_hvo_sequence
+
+import hvo_sequence
+from hvo_sequence.io_helpers import midi_to_hvo_sequence, note_sequence_to_hvo_sequence
 from hvo_sequence.drum_mappings import ROLAND_REDUCED_MAPPING, ROLAND_REDUCED_MAPPING_With_Bongos, BONGOSERRO_MAPPING
 import zipfile, bz2
 
@@ -69,14 +71,37 @@ class Attempt:
         path = None
         for root, dirs, files in os.walk(drum_source):
             for file in files:
-                if file.endswith('.mid') or file.endswith('.txt'):
+                if file.endswith('.mid'):
                     if self.drum_path in os.path.join(root, file):
                         path = os.path.join(root, file)
                         break
+                if file.endswith('.txt'):
+                    if self.drum_path.replace('.mid', '.txt') in os.path.join(root, file):
+                        path = os.path.join(root, file)
+                        break
+
         if path is None:
             raise Exception(f'Drum file {self.drum_path} not found in {drum_source}')
 
-        hs = midi_to_hvo_sequence(path, drum_mapping=drum_mapping, beat_division_factors=[4])
+        if path.endswith('.mid'):
+            hs = midi_to_hvo_sequence(path, drum_mapping=drum_mapping, beat_division_factors=[4])
+        else:
+            ns = note_seq.NoteSequence()
+            ns.time_signatures.add(numerator=4, denominator=4)
+            # load the text file
+            with open(path, 'r') as f:
+                for li, line in enumerate(f.readlines()):
+                    if li == 0:
+                        tempo = float(line.strip())
+                        ns.tempos.add(qpm=tempo)
+                    else:
+                        pitch, velocity, start_time, quarter_notes = line.strip().split(',')
+                        pitch = int(pitch)
+                        velocity = int(velocity)
+                        start_time = float(start_time)
+                        ns.notes.add(pitch=pitch, velocity=velocity, start_time=start_time, end_time=start_time + 0.1)
+            hs = note_sequence_to_hvo_sequence(ns, drum_mapping=drum_mapping, beat_division_factors=[4])
+
         hs.adjust_length(32)
         return hs
 
